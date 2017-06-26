@@ -14,7 +14,7 @@
 
 #define UPDATE_INTERVAL 17 // in milisseconds
 
-#define MAX_CLIENTS 10 // max number of connections to be queued up
+#define MAX_CLIENTS 2 // max number of connections to be queued up
 
 #define RELOAD_TIME 3 // in seconds
 #define NO_DAMAGE_TIME 150 // in miliseconds
@@ -57,8 +57,9 @@ struct Shot shots[2] = {
 int client_sockets[MAX_CLIENTS]; // list of sockets to be used to communicate with clients
 pthread_mutex_t accept_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t send_mutex = PTHREAD_MUTEX_INITIALIZER;
+//pthread_cond_t waitplayers = PTHREAD_COND_INITIALIZER; // used to wait both players before starting game thread
 
-char port[10];
+char port[MAX_CLIENTS];
 
 typedef struct {
     long thread_id; // thread identifier
@@ -172,7 +173,6 @@ void sendGameState(int client_id){
     // shots (or shots if you will) information.
 
     char state_msg[200];
-    char partico_msg[200];
     memset(state_msg, 0, sizeof state_msg); // makes sure state_msg is "clean"
 
     sprintf(state_msg, "-%d;%d;%d;%d;%d-*-%d;%d;%d;%d;%d-#-%d;%d;%d;%d-*-%d;%d;%d;%d-", 
@@ -360,13 +360,6 @@ void * handleConnection(void * args){
     
     char buffer[100]; // buffer used to store coming messages
     char msg[150];
-    char state_msg[150];
-
-    //char client[] = "Client ";
-    //char client_id[5];
-    //sprintf(client_id, "%ld", tid);
-    //strcat(client, client_id);
-    //strcat(client, ": ");
 
     while(1){
         memset(buffer, 0, sizeof buffer); // cleans buffer before next message
@@ -414,7 +407,6 @@ int main(int argc, char *argv[]){
 
     // creates thread that will take care of updating the local gamestate
     pthread_t gameThread;
-    pthread_create(&gameThread, NULL, updateGameState, NULL);
 
     pthread_t thread[MAX_CLIENTS];
     long n_thread = 0; // thread identifier
@@ -427,7 +419,7 @@ int main(int argc, char *argv[]){
 
     setupServer(&sockfd); // setups socket file descriptor
 
-    while(1){ // main accept() loop
+    while(n_thread < MAX_CLIENTS){ // main accept() loop
         // accept an incoming connection:
         addr_size = sizeof coming_addr;
 
@@ -457,6 +449,9 @@ int main(int argc, char *argv[]){
         pthread_mutex_unlock(&accept_mutex);
     }
     
+    // game thread starts after both players have connected
+    pthread_create(&gameThread, NULL, updateGameState, NULL);
+
     pthread_exit(NULL);
 
     return 0;
