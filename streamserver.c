@@ -14,6 +14,10 @@
 
 #define UPDATE_INTERVAL 17 // in milisseconds
 
+#define MATCH_TIME 90 // in seconds
+
+#define SPAWNABLE_PERIOD 10 // in seconds
+
 #define MAX_CLIENTS 2 // max number of connections to be queued up
 
 #define RELOAD_TIME 3 // in seconds
@@ -33,7 +37,18 @@ struct PlayerState{
     int pos_x, pos_y; // position in the world
     int curr_hp; // current hp for the player
     int alive; // alive or not
+    int score;
 };
+
+struct Spawnable{
+    int pos_x, pos_y; // position in the world
+    int status; // active or not
+    int time;
+};
+
+//struct GameState{
+//    int elapsed_time; // how much time since game started, used to determine when a match is over
+//};
 
 struct Shot{
     int player_id; // which player fired the shot
@@ -46,20 +61,33 @@ struct Shot{
 
 // filling out structs with default values
 struct PlayerState player[2] = { 
-{ .player_id = 0, .pos_x = 100, .pos_y = 300, .curr_hp = 3, .alive = 1 },
-{ .player_id = 1, .pos_x = 700, .pos_y = 300, .curr_hp = 3, .alive = 1 } };
+{ .player_id = 0, .pos_x = 100, .pos_y = 300, .curr_hp = 3, .alive = 1, .score = 0 },
+{ .player_id = 1, .pos_x = 700, .pos_y = 300, .curr_hp = 3, .alive = 1, .score = 0 } };
 
 struct Shot shots[2] = {
 { .player_id = 0, .active = 0, .reloaded = 1, .pos_x = 0, .pos_y = 0, .vel_x = 0, .vel_y = 0},
 { .player_id = 1, .active = 0, .reloaded = 1, .pos_x = 0, .pos_y = 0, .vel_x = 0, .vel_y = 0},
 }; // shots on the screen
 
+struct Spawnable health = { .pos_x = 0, .pos_y = 0, .status = 0, .time = 0 };
+
 int client_sockets[MAX_CLIENTS]; // list of sockets to be used to communicate with clients
 pthread_mutex_t accept_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t send_mutex = PTHREAD_MUTEX_INITIALIZER;
-//pthread_cond_t waitplayers = PTHREAD_COND_INITIALIZER; // used to wait both players before starting game thread
+pthread_mutex_t gameState_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t waitplayers = PTHREAD_COND_INITIALIZER; // used to wait both players before starting game thread
+
+pthread_t matchTimerThread;
+pthread_t spawnerThread;
 
 char port[MAX_CLIENTS];
+
+int connected_clients;
+
+int remaining_time = MATCH_TIME; // how much time has passed since the start of the match.
+// remaining_time will decrement, so time count goes downwards and when it reaches 0 the game has ended.
+
+int resetFlag = 0; // used in matchTimer so it stop counting time while server is resetting the game
 
 typedef struct {
     long thread_id; // thread identifier
@@ -162,26 +190,27 @@ void updatePlayerState(int player_id, char direction){
 }
 
 // send the current game state to the client
+// PRESENTATION
 void sendGameState(int client_id){
 
     // How this shitty protocol works:
     // The server sends a single message to the client
     // with all the information needed to represent a whole game state,
-    // including each player positions, (2 players for now, MAYBE make this
-    // parametrizable if everything's working fine and dandy later), current_hp
-    // and alive status. Also sends the same information for every enemy and
-    // shots (or shots if you will) information.
+    // including each player positions, current_hp
+    // and alive status. Also sends the same information for every shot
 
     char state_msg[200];
     memset(state_msg, 0, sizeof state_msg); // makes sure state_msg is "clean"
 
-    sprintf(state_msg, "-%d;%d;%d;%d;%d-*-%d;%d;%d;%d;%d-#-%d;%d;%d;%d-*-%d;%d;%d;%d-", 
+    sprintf(state_msg, "-%d;%d;%d;%d;%d-*-%d;%d;%d;%d;%d-#-%d;%d;%d;%d-*-%d;%d;%d;%d-#-%d;%d;%d-#-%d;%d;%d-",
     0, player[0].pos_x, player[0].pos_y, player[0].curr_hp, player[0].alive,
     1, player[1].pos_x, player[1].pos_y, player[1].curr_hp, player[1].alive,
     0, shots[0].active, (int)shots[0].pos_x, (int)shots[0].pos_y,
-    1, shots[1].active, (int)shots[1].pos_x, (int)shots[1].pos_y);
+    1, shots[1].active, (int)shots[1].pos_x, (int)shots[1].pos_y,
+    remaining_time, player[0].score, player[1].score,
+    health.status, health.pos_x, health.pos_y);
 
-    //printf("%s\n", state_msg);
+    printf("%s\n", state_msg);
     send(client_sockets[client_id], state_msg, strlen(state_msg), 0);
 }
 
@@ -194,8 +223,21 @@ float calcDist(int p0_x, int p0_y, int p1_x, int p1_y){
     return dist;
 }
 
+// called when a player is dead
 void resetGame(){
-    printf("Game over, sleeping for 3 seconds\n");
+    resetFlag = 1;
+
+    if (!player[0].alive)
+        player[1].score++;
+    else
+        player[0].score++;
+
+    // makes sure both clients receive the latest server state before sleeping
+    pthread_mutex_lock(&send_mutex);
+    sendGameState(0);
+    sendGameState(1);
+    pthread_mutex_unlock(&send_mutex);
+
     sleep(3);
 
     player[0].pos_x = 100;
@@ -207,6 +249,71 @@ void resetGame(){
     player[1].pos_y = 300;
     player[1].curr_hp = 3;
     player[1].alive = 1;
+
+    resetFlag = 0;
+}
+
+void * spawnerTimer(){
+    while(1){
+        if (health.time == 10){
+            health.status = 1;
+            health.pos_x = rand() % 800;
+            health.pos_y = rand() % 600;
+        }
+
+        if (resetFlag == 0)
+            health.time++;
+        else
+            health.time = 0;
+
+        sleep(1);
+    }
+
+    pthread_exit(NULL);
+}
+
+void * matchTimer(){
+    int thread_time = 0; // in seconds
+    
+    while(thread_time < MATCH_TIME){
+        remaining_time = MATCH_TIME - thread_time;
+        if (resetFlag == 0)
+            thread_time++;
+        sleep(1); // sleeps for a second 
+    }
+
+    remaining_time = 0;
+
+    pthread_exit(NULL);
+}
+
+// called when the match timer runs out
+void resetMatch(){
+    // makes sure both clients receive the latest server state before sleeping
+    pthread_mutex_lock(&send_mutex);
+    sendGameState(0);
+    sendGameState(1);
+    pthread_mutex_unlock(&send_mutex);
+
+    sleep(5);
+
+    player[0].score = 0;
+    player[1].score = 0;
+
+    player[0].pos_x = 100;
+    player[0].pos_y = 300;
+    player[0].curr_hp = 3;
+    player[0].alive = 1;
+
+    player[1].pos_x = 700;
+    player[1].pos_y = 300;
+    player[1].curr_hp = 3;
+    player[1].alive = 1;
+
+    health.status = 0;
+    health.time = 0;
+
+    pthread_create(&matchTimerThread, NULL, matchTimer, NULL);
 }
 
 // called when a shot has hit a player
@@ -223,6 +330,17 @@ void hitPlayer(int p_id){
 void * updateGameState(void * args){
     int i;
     int j;
+
+    pthread_mutex_lock(&gameState_mutex);
+    while(connected_clients < 2){
+        printf("Waiting for second player.\n");
+        pthread_cond_wait(&waitplayers, &gameState_mutex);
+    }
+
+    pthread_cond_broadcast(&waitplayers);
+
+    pthread_mutex_unlock(&gameState_mutex);
+
 
     while (1){
         // update shots
@@ -257,45 +375,61 @@ void * updateGameState(void * args){
                 shots[i].pos_y = 0;
                 shots[i].vel_y = - shots[i].vel_y;
             }
-
         }
 
+        // check if a player has picked up health
+        for(j = 0; j < 2; j++)
+            if(health.status == 1 &&
+               calcDist(health.pos_x, health.pos_y, player[j].pos_x, player[j].pos_y) < PLAYER_SIDE_SIZE){
+                if (player[j].curr_hp < 3)
+                    player[j].curr_hp++;
+                health.status = 0;
+                health.time = 0;
+            }
+
         // sends gameState to both clients
+        // PRESENTATION
         pthread_mutex_lock(&send_mutex);
         sendGameState(0);
         sendGameState(1);
         pthread_mutex_unlock(&send_mutex);
 
+        // check if a player has died
         if (player[0].alive == 0 || player[1].alive == 0)
             resetGame();
+
+        // check if the match is over
+        if (remaining_time == 0)
+            resetMatch();
 
         usleep(1000 * UPDATE_INTERVAL); // rest a little bit
     }
 }
 
 // This thread counts some time before making a shot active again - reloading it
+// PRESENTATION
 void * reloadTimer(void * arg){
     int p_id = (int)(long) arg;
     shots[p_id].reloaded = 0;
 
-    int elapsed_time = 0, trigger = RELOAD_TIME * 1000; // 3 seconds
+    int thread_time = 0, trigger = RELOAD_TIME * 1000; // 3 seconds
     int flag = 0;
     
     clock_t start = clock();
+    clock_t diff;
     do{ // counts to defined time
-        clock_t diff = clock() - start;
-        elapsed_time = diff * 1000 / CLOCKS_PER_SEC;
+        diff = clock() - start;
+        thread_time = diff * 1000 / CLOCKS_PER_SEC;
 
-        if (elapsed_time >= NO_DAMAGE_TIME && flag == 0){ // turns on damage
+        if (thread_time >= NO_DAMAGE_TIME && flag == 0){ // turns on damage
             shots[p_id].damage = 1;
             flag = 1;
         }
 
-    }while (elapsed_time < trigger);
+    }while (thread_time < trigger);
 
     //printf("Time taken: %d seconds, %d milliseconds\n", elapsed_time/1000, elapsed_time%1000);
 
-    // locks with mutex so server doesn't try to send state while it is being changed
     shots[p_id].active = 0; // makes shot "ready" to be activated/fired again
     shots[p_id].reloaded = 1;
 
@@ -375,6 +509,7 @@ void * handleConnection(void * args){
 
         buffer[numbytes] = '\0'; // inserts EOF character at the end of the message
 
+        // PRESENTATION
         if (buffer[0] == 'c'){
             //printf("From Client[%d] msg: %s\n", (int)tid, buffer);
             if (buffer[1] == 'f'){ // 'fire' command
@@ -419,6 +554,7 @@ int main(int argc, char *argv[]){
 
     setupServer(&sockfd); // setups socket file descriptor
 
+    connected_clients = 0;
     while(n_thread < MAX_CLIENTS){ // main accept() loop
         // accept an incoming connection:
         addr_size = sizeof coming_addr;
@@ -439,18 +575,25 @@ int main(int argc, char *argv[]){
         // and still accept more connections
         pthread_create(&thread[n_thread], NULL, handleConnection, (void *) &targs);
         n_thread++;
+        connected_clients++;
 
         inet_ntop(coming_addr.ss_family,
                 get_in_addr((struct sockaddr *)&coming_addr),
                 ipstr, sizeof ipstr);
 
         printf("server: got connection from %s\n", ipstr);
+
+
         // mutex unlock
         pthread_mutex_unlock(&accept_mutex);
     }
     
     // game thread starts after both players have connected
     pthread_create(&gameThread, NULL, updateGameState, NULL);
+
+    pthread_create(&matchTimerThread, NULL, matchTimer, NULL);
+
+    pthread_create(&spawnerThread, NULL, spawnerTimer, NULL);
 
     pthread_exit(NULL);
 

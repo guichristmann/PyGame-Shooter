@@ -18,6 +18,7 @@ CANNON_2 = (60, 86, 69)
 SHOT1 = (0, 255, 0)
 SHOT2 = (255, 0, 0)
 WHITE = (255, 255, 255)
+RED = (210, 100, 130)
 RELOAD_BAR = (190, 190, 190)
 
 LEFT = 0
@@ -54,8 +55,12 @@ class GameState():
         self.players = [Player(3, (100, 100)), Player(3, (100, 200))]
         self.shots = [Shot(), Shot()]
 
-   # def addPlayer(self, pid, pos):
-   #     self.players[pid] = pos
+        self.matchTime = 0
+        self.player0_score = 0
+        self.player1_score = 0
+
+        self.health_status = 0
+        self.health_pos = (0, 0)
 
     def updatePlayerPos(self, player, new_pos):
         self.players[player].updatePos(new_pos)    
@@ -88,10 +93,9 @@ class ShooterGame():
         self.font = pygame.font.Font(None, 30)
 
         self.resetFlag = False
+        self.matchOver = False # if True match has ended
 
         self.player_id = player_id
-        self.p0_score = 0
-        self.p1_score = 0
 
         self.degrees = 0.0
 
@@ -182,19 +186,18 @@ class ShooterGame():
         self.state.players[1].curr_hp = p1_info[2]
         self.state.players[1].alive = p1_info[3]
 
-        if self.state.players[0].alive and self.state.players[1].alive:
-            self.resetFlag = False
-
-        if self.resetFlag == False: # client is not waiting for server to restart the game
-            if self.state.players[0].alive == False:
-                self.p1_score += 1
-                self.resetFlag = True # makes client wait for the restart
-            elif self.state.players[1].alive == False:
-                self.p0_score += 1
-                self.resetFlag = True
-
         shots_info = comm.retrieveShotsState()
         self.state.updateShotsPos(shots_info)
+
+        self.state.matchTime, self.state.player0_score, self.state.player1_score = comm.retrieveServerState()
+
+        if self.state.matchTime == 0:
+            self.matchOver = True
+        else:
+            self.matchOver = False
+
+        self.state.health_status, pos_x, pos_y = comm.retrieveHealthState()
+        self.state.health_pos = (pos_x, pos_y)
 
     # gets the position the user clicked on the screen and sends to the server
     def sendShotToServer(self):
@@ -209,16 +212,6 @@ class ShooterGame():
         for shot in self.state.shots:
             if shot.active:
                 pygame.draw.circle(self.screen, WHITE, shot.pos, 2) # draws the shot
-
-        #        if self.reloadFlag == False:
-        #            self.reloadFlag = True # reset the reload bar
-                
-
-        #completeness = int(max(min((self.curr_tick - self.startTick) / float(RELOAD_TIME) * 50, 50), 0))
-        #reload_bar = pygame.Rect(0, 0, completeness, 3)
-        #reload_bar.center = (self.state.players[self.player_id].pos[0],
-        #                     self.state.players[self.player_id].pos[1] - 40)
-        #pygame.draw.rect(self.screen, RELOAD_BAR, reload_bar)
 
         # draw both players
         p0_draw_pos = (self.state.players[0].pos[0] - self.drawPlayerOffset,
@@ -272,14 +265,41 @@ class ShooterGame():
             except:
                 pass
 
+        # draw health pickup
+        if self.state.health_status:
+            pygame.draw.circle(self.screen, RED, self.state.health_pos, 5)
+
         self.drawText()
 
         pygame.display.flip()
 
     # draws scoreboard and information
     def drawText(self):
-        p1_score_text = self.font.render("Player 1: " + str(self.p0_score), True, (255, 255, 255))
-        p2_score_text = self.font.render("Player 2: " + str(self.p1_score), True, (255, 255, 255))
+        p1_score_text = self.font.render("Player 1: " + str(self.state.player0_score), True, WHITE)
+        p2_score_text = self.font.render("Player 2: " + str(self.state.player1_score), True, WHITE)
+
+        # draw match remaining time on the screen
+        min_string = str(self.state.matchTime / 60)
+        secs = int(self.state.matchTime % 60.0)
+        
+        sec_string = str(secs)
+        if secs < 10:
+            sec_string = '0' + sec_string
+
+        timer_text = self.font.render(min_string + ':' + sec_string, True, WHITE)
+
+        # draws win/lose/draw and match over text
+        if self.matchOver:
+            if self.state.player0_score > self.state.player1_score:
+                winText = self.font.render("Player 1 Won!", True, WHITE)
+            elif self.state.player1_score > self.state.player0_score:
+                winText = self.font.render("Player 2 Won!", True, WHITE)
+            else:
+                winText = self.font.render("Draw!", True, WHITE)
+
+            self.screen.blit(winText, (self.size[0]/2-60, 30))
+        else:
+            self.screen.blit(timer_text, (self.size[0]/2-10, 30))
 
         self.screen.blit(p1_score_text, (30, 30))
         self.screen.blit(p2_score_text, (self.size[0]-140, 30))

@@ -18,6 +18,7 @@ struct PlayerState{
     int pos_x, pos_y; // position in the world
     int curr_hp; // current hp for the player
     int alive; // alive or not
+    int score;
 };
 
 struct Shot{
@@ -26,12 +27,20 @@ struct Shot{
     int pos_x, pos_y; // shot curr pos in the screen
 };
 
+struct Health{
+    int status;
+    int pos_x, pos_y;
+};
+
+int server_elapsed_time;
+
 struct PlayerState state[2];
 
 struct Shot shots[2];
 
-int sfd_client; // socket file descriptors for client, used to get the game state from the server
+struct Health health = { .status = 0, .pos_x = 0, .pos_y = 0 };
 
+int sfd_client; // socket file descriptors for client, used to get the game state from the server
 
 pthread_t listenThreads;
 
@@ -53,6 +62,9 @@ void updateLocalState(char * msg, int length){
     char strPosY[5];
     char strHp[5];
     char strAlive[5];
+    char strMatchTime[5];
+    char strP0_score[5];
+    char strP1_score[5];
 
     int player;
     int new_posx;
@@ -69,6 +81,10 @@ void updateLocalState(char * msg, int length){
     int active;
     int shotPosX;
     int shotPosY;
+
+    int matchTime;
+    int p0_score;
+    int p1_score;
 
     //printf("Msg:%s\n", msg);
 
@@ -190,7 +206,6 @@ void updateLocalState(char * msg, int length){
     shots[shotPlayer].pos_x = shotPosX;
     shots[shotPlayer].pos_y = shotPosY;
 
-    // -0;160;200;3;1-*-1;100;500;3;1-#-0;0;0;0-*-1;0;0;0-
     // getting shot information of player 2
 
     i = i+3; // goes to next relevant position
@@ -218,14 +233,60 @@ void updateLocalState(char * msg, int length){
     shots[shotPlayer].active = active;
     shots[shotPlayer].pos_x = shotPosX;
     shots[shotPlayer].pos_y = shotPosY;
+
+    // getting match time information
+    j = 0;
+    for(i = i + 3; msg[i] != ';'; i++, j++)
+        strMatchTime[j] = msg[i];
+    strMatchTime[j] = '\0';
+    matchTime = atoi(strMatchTime);
+
+    j = 0;
+    for(i = i + 1; msg[i] != ';'; i++, j++)
+        strP0_score[j] = msg[i];
+    p0_score = atoi(strP0_score);
+
+    j = 0;
+    for(i = i + 1; msg[i] != '-'; i++, j++)
+        strP1_score[j] = msg[i];
+    p1_score = atoi(strP1_score);
+
+    server_elapsed_time = matchTime;
+    state[0].score = p0_score;
+    state[1].score = p1_score;
+
+
+    char strStatus[5];
+    char strHealthPos[5];
+    
+    // -0;160;200;3;1-*-1;100;500;3;1-#-0;0;0;0-*-1;0;0;0-#-1-0-0-#-0-230-58-
+    // getting spawnable item information
+    j = 0;
+    for (i = i + 3; msg[i] != ';'; i++, j++)
+        strStatus[j] = msg[i];
+    strStatus[j] = '\0';
+
+    health.status = atoi(strStatus);
+
+    j = 0;
+    for(i = i + 1; msg[i] != ';'; i++, j++)
+        strHealthPos[j] = msg[i];
+    strHealthPos[j] = '\0';
+
+    health.pos_x = atoi(strHealthPos);
+
+    j = 0;
+    for(i = i + 1; msg[i] != '-'; i++, j++)
+        strHealthPos[j] = msg[i];
+    strHealthPos[j] = '\0';
+
+    health.pos_y = atoi(strHealthPos);
 }
 
 // each client has its own thread running this function which
 // continuously queries the server for the game state, updating
 // the local struct
 void * listenGameState(void * args){
-    //int tid = (int)(long) args;
-
     int numbytes;
     char buffer[500];
 
@@ -238,11 +299,9 @@ void * listenGameState(void * args){
             printf("Couldn't get game state from the server.\n");
         } else {
             buffer[numbytes] = '\0';
-            if (numbytes > 60)
-                continue;     
-
             //printf("[%d] buffer: %s\n", numbytes, buffer);
-            updateLocalState(buffer, strlen(buffer));
+            if (numbytes < 100) // if double message is gotten ignore it
+                updateLocalState(buffer, strlen(buffer));
             //printf("hmm\n");
             //printf("%d:%s\n", numbytes, buffer);
             
@@ -265,6 +324,14 @@ void * listenGameState(void * args){
             //printf("2:%s\n", msg_player2);
         }
     }
+}
+
+static PyObject * comm_retrieveHealthState(PyObject * self){
+    return Py_BuildValue("iii", health.status, health.pos_x, health.pos_y);
+}
+
+static PyObject * comm_retrieveServerState(PyObject * self){
+    return Py_BuildValue("iii", server_elapsed_time, state[0].score, state[1].score);
 }
 
 // gets the current structure and builds to python values
@@ -358,6 +425,8 @@ static PyMethodDef comm_methods[] = {
     { "sendMessage", (PyCFunction) comm_sendMessage, METH_VARARGS, NULL },
     { "retrievePlayerState", (PyCFunction) comm_retrievePlayerState, METH_VARARGS, NULL },
     { "retrieveShotsState", (PyCFunction) comm_retrieveShotsState, METH_NOARGS, NULL },
+    { "retrieveServerState", (PyCFunction) comm_retrieveServerState, METH_NOARGS, NULL },
+    { "retrieveHealthState", (PyCFunction) comm_retrieveHealthState, METH_NOARGS, NULL },
     { NULL }
 };
 
