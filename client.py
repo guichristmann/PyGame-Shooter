@@ -116,6 +116,8 @@ class ShooterGame():
 
         self.cannon0_img = pygame.image.load(os.path.join('Sprites', 'cannon1.png'))
         self.cannon1_img = pygame.image.load(os.path.join('Sprites', 'cannon2.png'))
+
+        self.health_sprite = pygame.image.load(os.path.join('Sprites', 'health.png'))
         self.cannonYOffset = 25 # olhometro pegando fooogo
         self.cannonXOffset = 9
 
@@ -267,7 +269,8 @@ class ShooterGame():
 
         # draw health pickup
         if self.state.health_status:
-            pygame.draw.circle(self.screen, RED, self.state.health_pos, 5)
+            self.screen.blit(self.health_sprite, self.state.health_pos)
+            #pygame.draw.circle(self.screen, RED, self.state.health_pos, 5)
 
         self.drawText()
 

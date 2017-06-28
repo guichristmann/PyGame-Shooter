@@ -380,7 +380,7 @@ void * updateGameState(void * args){
         // check if a player has picked up health
         for(j = 0; j < 2; j++)
             if(health.status == 1 &&
-               calcDist(health.pos_x, health.pos_y, player[j].pos_x, player[j].pos_y) < PLAYER_SIDE_SIZE){
+               calcDist(health.pos_x, health.pos_y, player[j].pos_x, player[j].pos_y) < PLAYER_SIDE_SIZE+15){
                 if (player[j].curr_hp < 3)
                     player[j].curr_hp++;
                 health.status = 0;
